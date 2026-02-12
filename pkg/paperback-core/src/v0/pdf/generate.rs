@@ -306,7 +306,6 @@ impl ToPdf for MainDocument {
         // Header.
         current_layer.begin_text_section();
         {
-            current_layer.set_font(&monospace_font, 10.0);
             current_layer.set_word_spacing(1.2);
             current_layer.set_character_spacing(1.0);
 
@@ -403,7 +402,12 @@ impl ToPdf for MainDocument {
         let mut svg_strings = data_qrs; // Vec<String>
         let mut idx: usize = 0;
         let codes_per_page = 9;
-        let target_size = (A4_WIDTH - A4_MARGIN * 2.0) / 3.0;
+        // Allocate a small margin between QR codes to avoid touching/overlap.
+        let target_size = (A4_WIDTH - A4_MARGIN * 2.0 - QR_MARGIN * 2.0) / 3.0;
+        let mut last_page_count: usize = 0;
+        // Track the starting Y of the last page we placed QRs on so we can
+        // position the checksum banner after the grid properly.
+        let mut last_page_start: Mm = A4_MARGIN;
 
         while idx < svg_strings.len() {
             // For pages after the first, create a new page and layer, and add a small
@@ -432,7 +436,7 @@ impl ToPdf for MainDocument {
                 last_layer = current_layer.clone();
 
                 // Place up to `codes_per_page` codes on this page.
-                let mut current_x = A4_MARGIN;
+                let mut placed_on_this_page: usize = 0;
                 for _ in 0..codes_per_page {
                     if idx >= svg_strings.len() {
                         break;
@@ -441,29 +445,31 @@ impl ToPdf for MainDocument {
                     let svg_parsed = Svg::parse(svg)?;
                     let svg_ref = svg_parsed.into_xobject(&current_layer);
                     let (width, height) = (svg_ref.width, svg_ref.height);
+                    // Compute column/row placement to ensure consistent spacing.
+                    let col = (placed_on_this_page % 3) as f32;
+                    let row = (placed_on_this_page / 3) as f32;
+                    let translate_x = A4_MARGIN + (target_size + QR_MARGIN) * col;
+                    let translate_y = A4_HEIGHT - (current_y + (target_size + QR_MARGIN) * row + target_size);
                     svg_ref.add_to_layer(
                         &current_layer,
                         SvgTransform {
-                            translate_x: Some(current_x.into()),
-                            translate_y: Some((A4_HEIGHT - (current_y + target_size)).into()),
+                            translate_x: Some(translate_x.into()),
+                            translate_y: Some(translate_y.into()),
                             dpi: Some(SVG_DPI),
                             scale_x: Some(target_size / Mm::from(width.into_pt(SVG_DPI))),
                             scale_y: Some(target_size / Mm::from(height.into_pt(SVG_DPI))),
                             ..Default::default()
                         },
                     );
-                    current_x += target_size;
-                    if current_x + target_size > A4_WIDTH {
-                        current_x = A4_MARGIN;
-                        current_y += target_size;
-                    }
                     idx += 1;
+                    placed_on_this_page += 1;
                 }
+                last_page_count = placed_on_this_page;
             } else {
                 // First page: use existing `current_layer` that already has header/banner.
                 let current_layer = &current_layer;
                 last_layer = current_layer.clone();
-                let mut current_x = A4_MARGIN;
+                let mut placed_on_this_page: usize = 0;
                 for _ in 0..codes_per_page {
                     if idx >= svg_strings.len() {
                         break;
@@ -472,26 +478,33 @@ impl ToPdf for MainDocument {
                     let svg_parsed = Svg::parse(svg)?;
                     let svg_ref = svg_parsed.into_xobject(current_layer);
                     let (width, height) = (svg_ref.width, svg_ref.height);
+                    let col = (placed_on_this_page % 3) as f32;
+                    let row = (placed_on_this_page / 3) as f32;
+                    let translate_x = A4_MARGIN + (target_size + QR_MARGIN) * col;
+                    let translate_y = A4_HEIGHT - (current_y + (target_size + QR_MARGIN) * row + target_size);
                     svg_ref.add_to_layer(
                         current_layer,
                         SvgTransform {
-                            translate_x: Some(current_x.into()),
-                            translate_y: Some((A4_HEIGHT - (current_y + target_size)).into()),
+                            translate_x: Some(translate_x.into()),
+                            translate_y: Some(translate_y.into()),
                             dpi: Some(SVG_DPI),
                             scale_x: Some(target_size / Mm::from(width.into_pt(SVG_DPI))),
                             scale_y: Some(target_size / Mm::from(height.into_pt(SVG_DPI))),
                             ..Default::default()
                         },
                     );
-                    current_x += target_size;
-                    if current_x + target_size > A4_WIDTH {
-                        current_x = A4_MARGIN;
-                        current_y += target_size;
-                    }
                     idx += 1;
+                    placed_on_this_page += 1;
                 }
+                last_page_count = placed_on_this_page;
             }
         }
+        // Always place the checksum on a new page.
+        let (page, layer) = doc.add_page(A4_WIDTH, A4_HEIGHT, "Layer 1");
+        let new_page = doc.get_page(page);
+        let new_layer = new_page.get_layer(layer);
+        current_y = A4_MARGIN + Pt(10.0).into();
+        last_layer = new_layer.clone();
 
         current_y += banner(
             &last_layer,
