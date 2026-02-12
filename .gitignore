@@ -1,5 +1,7 @@
 /target
 *.swp
 .DS_Store
-test.ged.7z
+*.ged.7z
+*.ged.zip
+*.pdf
 outputs
