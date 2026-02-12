@@ -284,8 +284,7 @@ impl ToPdf for MainDocument {
         let data_qrs = data_qrs
             .iter()
             .map(|code| code.render::<svg::Color>().build())
-            .map(|svg| Svg::parse(&svg))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
 
         // Construct an A4 PDF.
         let (doc, page1, layer1) = PdfDocument::new(
@@ -300,6 +299,7 @@ impl ToPdf for MainDocument {
 
         let current_page = doc.get_page(page1);
         let current_layer = current_page.get_layer(layer1);
+        let mut last_layer = current_layer.clone();
 
         let mut current_y = A4_MARGIN + Pt(10.0).into();
 
@@ -399,16 +399,49 @@ impl ToPdf for MainDocument {
             .iter()
             .for_each(|code| println!("{}", multibase::encode(multibase::Base::Base10, code)));
 
-        let mut current_x = A4_MARGIN;
-        let mut data_qr_refs = data_qrs
-            .into_iter()
-            .map(|code| code.into_xobject(&current_layer));
-        for _ in 0..9 {
-            let target_size = (A4_WIDTH - A4_MARGIN * 2.0) / 3.0;
-            match data_qr_refs.next() {
-                Some(svg) => {
-                    let (width, height) = (svg.width, svg.height);
-                    svg.add_to_layer(
+        // Place QR codes across as many A4 pages as necessary, in a 3x3 grid per page.
+        let mut svg_strings = data_qrs; // Vec<String>
+        let mut idx: usize = 0;
+        let codes_per_page = 9;
+        let target_size = (A4_WIDTH - A4_MARGIN * 2.0) / 3.0;
+
+        while idx < svg_strings.len() {
+            // For pages after the first, create a new page and layer, and add a small
+            // header indicating continuation.
+            if idx > 0 {
+                let (page, layer) = doc.add_page(A4_WIDTH, A4_HEIGHT, "Layer 1");
+                let new_page = doc.get_page(page);
+                let new_layer = new_page.get_layer(layer);
+                // Set up fonts on the new layer by reusing references.
+                // We don't re-add fonts to the document here; `monospace_font` and
+                // `text_font` are already registered with the document.
+                current_y = A4_MARGIN + Pt(10.0).into();
+
+                // Small continuation header.
+                new_layer.begin_text_section();
+                {
+                    new_layer.set_font(&text_font, 14.0);
+                    new_layer.set_text_cursor(A4_MARGIN, A4_HEIGHT - current_y);
+                    new_layer.set_fill_color(colours::MAIN_DOCUMENT_TRIM);
+                    new_layer.write_text("Main Document (cont.)", &text_font);
+                }
+                new_layer.end_text_section();
+
+                // Replace current_layer with new_layer for placement.
+                let current_layer = new_layer;
+                last_layer = current_layer.clone();
+
+                // Place up to `codes_per_page` codes on this page.
+                let mut current_x = A4_MARGIN;
+                for _ in 0..codes_per_page {
+                    if idx >= svg_strings.len() {
+                        break;
+                    }
+                    let svg = &svg_strings[idx];
+                    let svg_parsed = Svg::parse(svg)?;
+                    let svg_ref = svg_parsed.into_xobject(&current_layer);
+                    let (width, height) = (svg_ref.width, svg_ref.height);
+                    svg_ref.add_to_layer(
                         &current_layer,
                         SvgTransform {
                             translate_x: Some(current_x.into()),
@@ -419,69 +452,49 @@ impl ToPdf for MainDocument {
                             ..Default::default()
                         },
                     );
+                    current_x += target_size;
+                    if current_x + target_size > A4_WIDTH {
+                        current_x = A4_MARGIN;
+                        current_y += target_size;
+                    }
+                    idx += 1;
                 }
-                None => {
-                    // Dashed line box where the QR code would go.
-                    let polygon = Polygon {
-                        rings: vec![vec![
-                            (
-                                Point::new(
-                                    current_x + QR_MARGIN / 2.0,
-                                    A4_HEIGHT - (current_y + QR_MARGIN / 2.0),
-                                ),
-                                false,
-                            ),
-                            (
-                                Point::new(
-                                    current_x + target_size - QR_MARGIN / 2.0,
-                                    A4_HEIGHT - (current_y + QR_MARGIN / 2.0),
-                                ),
-                                false,
-                            ),
-                            (
-                                Point::new(
-                                    current_x + target_size - QR_MARGIN / 2.0,
-                                    A4_HEIGHT - (current_y + target_size - QR_MARGIN / 2.0),
-                                ),
-                                false,
-                            ),
-                            (
-                                Point::new(
-                                    current_x + QR_MARGIN / 2.0,
-                                    A4_HEIGHT - (current_y + target_size - QR_MARGIN / 2.0),
-                                ),
-                                false,
-                            ),
-                        ]],
-                        mode: PolygonMode::Stroke,
-                        winding_order: WindingOrder::NonZero,
-                    };
-
-                    let dash_pattern = LineDashPattern {
-                        dash_1: Some(6),
-                        gap_1: Some(4),
-                        ..LineDashPattern::default()
-                    };
-
-                    current_layer.set_outline_color(colours::LIGHT_GREY);
-                    current_layer.set_line_dash_pattern(dash_pattern);
-                    current_layer.add_polygon(polygon);
+            } else {
+                // First page: use existing `current_layer` that already has header/banner.
+                let current_layer = &current_layer;
+                last_layer = current_layer.clone();
+                let mut current_x = A4_MARGIN;
+                for _ in 0..codes_per_page {
+                    if idx >= svg_strings.len() {
+                        break;
+                    }
+                    let svg = &svg_strings[idx];
+                    let svg_parsed = Svg::parse(svg)?;
+                    let svg_ref = svg_parsed.into_xobject(current_layer);
+                    let (width, height) = (svg_ref.width, svg_ref.height);
+                    svg_ref.add_to_layer(
+                        current_layer,
+                        SvgTransform {
+                            translate_x: Some(current_x.into()),
+                            translate_y: Some((A4_HEIGHT - (current_y + target_size)).into()),
+                            dpi: Some(SVG_DPI),
+                            scale_x: Some(target_size / Mm::from(width.into_pt(SVG_DPI))),
+                            scale_y: Some(target_size / Mm::from(height.into_pt(SVG_DPI))),
+                            ..Default::default()
+                        },
+                    );
+                    current_x += target_size;
+                    if current_x + target_size > A4_WIDTH {
+                        current_x = A4_MARGIN;
+                        current_y += target_size;
+                    }
+                    idx += 1;
                 }
-            };
-            current_x += target_size;
-            if current_x + target_size > A4_WIDTH {
-                current_x = A4_MARGIN;
-                current_y += target_size;
             }
-        }
-        if data_qr_refs.next().is_some() {
-            return Err(Error::TooManyCodes(
-                "only 9 codes allowed in this version of paperback".to_string(),
-            ));
         }
 
         current_y += banner(
-            &current_layer,
+            &last_layer,
             A4_HEIGHT - current_y,
             (A4_WIDTH, A4_MARGIN, Mm(3.0)),
             Text {
@@ -501,7 +514,7 @@ impl ToPdf for MainDocument {
 
         // Document checksum.
         current_y += qr_with_fallback(
-            &current_layer,
+            &last_layer,
             A4_HEIGHT - current_y,
             (A4_WIDTH, A4_MARGIN, 0.18),
             self.checksum().to_bytes(),

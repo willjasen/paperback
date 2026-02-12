@@ -1,2 +1,5 @@
 /target
 *.swp
+.DS_Store
+test.ged.7z
+outputs

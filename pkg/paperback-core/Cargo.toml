@@ -60,6 +60,7 @@ quickcheck_macros = "^1"
 criterion = { version = "^0.7", features = ["html_reports"] }
 # FIXME: This is a hack to allow us to bencmark internal modules with criterion.
 "paperback-core" = { path = ".", features = [ "donotuse_expose_internal_modules" ] }
+lopdf = "^0.27"
 
 [[bench]]
 name = "shamir"
